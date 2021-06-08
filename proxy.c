@@ -1,18 +1,21 @@
 #include <stdio.h>
 #include "csapp.h"
+#include "cache.h"
 /* Recommended max cache and object sizes */
 #define MAX_CACHE_SIZE 1049000
 #define MAX_OBJECT_SIZE 102400
-
+#define MAX_CACHE_LINE 16
 /* You won't lose style points for including this long line in your code */
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
 
-/* declaration */
+/* mutex lock for cache */
+sem_t cache_lock;
+
 
 /* proxy */
-int parseHttpRequest(char * httpReq, size_t length, char* parseResult);
 void *proxy_doit(void* fd);
 int parse_uri(char * uri, char * host, char * path, int * port);
+
 
 int main(int argc, char* argv[])
 {
@@ -20,6 +23,9 @@ int main(int argc, char* argv[])
     char hostname[MAXLINE], port[MAXLINE];
     socklen_t clientlen;
     struct sockaddr_storage clientaddr;
+
+    /* initialize the lock */
+    Sem_init(&cache_lock, 0, 1);
 
     if( argc != 2 ){
         printf("usage:\n"
@@ -50,6 +56,9 @@ void *proxy_doit(void * pfd){
     rio_t rio;
     int fd = *(int *)pfd;
 
+    char * resp;
+    size_t content_sz;
+
     Rio_readinitb(&rio, fd);
     if (!Rio_readlineb(&rio, buf, MAXLINE)){
         return NULL;
@@ -69,8 +78,24 @@ void *proxy_doit(void * pfd){
     }
     char cport[16];
     sprintf(cport, "%d", port);
-
-    /* find if the object is in the cache */
+    
+    /*
+     * find if the object is in the cache 
+     * need to lock the cache before searching
+     */
+    P(&cache_lock);
+    cte_t *ctep = cache_hit(host,path);
+    if(ctep != NULL){
+        printf("cache hit. %s %s\n",host,path);
+        resp = ctep->content ;
+        content_sz = ctep->content_size;
+        /* return the object to the client */
+        Rio_writen(fd, resp, content_sz);
+        Close(fd);
+        V(&cache_lock);
+        return NULL;
+    }
+    V(&cache_lock);
 
     /* not in the cache , connect with server */
     int sockfd = open_clientfd(host,cport);
@@ -103,13 +128,16 @@ void *proxy_doit(void * pfd){
     Rio_writen(sockfd, "\r\n", 2);
 
     /* recv from server */
-    char * resp = calloc(MAX_OBJECT_SIZE, sizeof(char));
-    size_t n = Rio_readn(sockfd, resp, MAX_OBJECT_SIZE);
+    resp = calloc(MAX_OBJECT_SIZE, sizeof(char));
+    content_sz = Rio_readn(sockfd, resp, MAX_OBJECT_SIZE);
     
     /* return the object to the client */
-    Rio_writen(fd, resp, n);
+    Rio_writen(fd, resp, content_sz);
     /* update the cache with the new object */
-
+    /* add lock before access cache */
+    P(&cache_lock);
+    cache_put(ctep, host, path, resp, content_sz);
+    V(&cache_lock);
     /* close the socket */
     Close(sockfd);
     Close(fd);
@@ -148,3 +176,4 @@ int parse_uri(char * uri, char * host, char * path, int * port){
     }   
     return 0;
 }
+
