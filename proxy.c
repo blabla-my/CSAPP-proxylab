@@ -124,11 +124,13 @@ int parse_uri(char * uri, char * host, char * path, int * port){
         strcpy(host,uri);
         /* parse port number */
         *port = atoi(pc+1);
+        uri  = pc + 1;
     }
     else
     if((pc = strstr(uri, "/"))){
         *pc = 0;
         strcpy(host,uri);
+        uri = pc + 1;
     }
     /* parse path */
     if((pc = strstr(uri, "/"))){
